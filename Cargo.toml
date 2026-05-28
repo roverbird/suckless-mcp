@@ -1,0 +1,27 @@
+[package]
+name    = "suckless-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "suckless-mcp"
+path = "src/main.rs"
+
+[dependencies]
+axum        = "0.7"
+tokio       = { version = "1", features = ["full"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+toml        = "0.8"
+dashmap     = "5"
+regex       = { version = "1", default-features = false, features = ["std"] }
+chrono      = { version = "0.4", default-features = false, features = ["std", "now"] }
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
+tokio-stream        = { version = "0.1", features = ["sync"] }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
