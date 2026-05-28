@@ -1,27 +1,27 @@
+```markdown
 # suckless-mcp
 
-**The suckless MCP gateway. Turn any CLI tool into a RUST MCP endpoint.**
+**The suckless MCP gateway. Turn any CLI tool into an MCP endpoint.**
 
-One binary. Two configs. One dir of skills. No bloat self-hosted MCP host that runs on any VPS.
+One binary. Two configs. One dir of skills. No bloat.
 
 ```bash
 # Copy binary
 cp suckless-mcp /usr/local/bin/
 
 # Create config
-cat > config.toml << EOF
+mkdir -p /etc/suckless-mcp
+cat > /etc/suckless-mcp/config.toml << EOF
 listen_host = "127.0.0.1"
 listen_port = 8080
-skills_root = "/opt/skills"
 max_concurrent_tools = 5
 EOF
 
-# Add a skill folder
+# Add a skill
 mkdir -p /opt/skills/weather
 cat > /opt/skills/weather/skill.toml << EOF
 name = "weather"
-version = "1.0.0"
-description = "Get weather forecast"
+description = "Get weather forecast for a city"
 
 [runtime]
 entrypoint = "weather.py"
@@ -37,8 +37,11 @@ EOF
 # Add your CLI tool
 cp weather.py /opt/skills/weather/
 
+# Add an API key
+suckless-mcp keys add admin "your-secret-key"
+
 # Run
-./suckless-mcp --config config.toml
+suckless-mcp serve
 ```
 
 ## What is this?
@@ -60,16 +63,16 @@ AI Agent → Caddy → suckless-mcp → your CLI tool (--flags)
 | Problem | Solution |
 |---------|----------|
 | MCP SDK requires rewriting tools | Keep your tools as-is |
-| Need auth + rate limiting | Built into gateway |
+| Need authentication | Built into gateway |
 | Each tool needs its own server | One gateway, many tools |
 | Setup complexity | One binary, two configs |
 
 ## What you need
 
 1. **suckless-mcp** binary (this)
-2. **config.toml** - host, port, skills folder
-3. **keys.toml** - API keys (auto-managed)
-4. **Skills folder** - one subfolder per tool
+2. **config.toml** - host, port, concurrency limits
+3. **keys.toml** - API keys (managed via CLI)
+4. **/opt/skills/** - one subfolder per tool
 5. **skill.toml** - describes your tool to AI
 6. **Your CLI tool** - must use `--flags` and output JSON
 
@@ -78,17 +81,16 @@ AI Agent → Caddy → suckless-mcp → your CLI tool (--flags)
 ```
 /opt/skills/weather/
 ├── skill.toml      # Machine-readable manifest
-├── weather.py      # Your CLI tool
-└── SKILL.md        # Human/LLM instructions (optional)
+└── weather.py      # Your CLI tool
 ```
 
 ## The contract: Your CLI tool MUST
 
-1. **Use `--flags` only** - no positional args
+1. **Use `--flags` only** - no positional args, no shell string concatenation
 2. **Output valid JSON** - nothing else to stdout
 3. **Exit 0 on success, 1 on error**
 
-That's it. Everything else (auth, rate limits, concurrency) is handled by suckless-mcp.
+That's it. Everything else (auth, concurrency, timeouts) is handled by suckless-mcp.
 
 ## Example: Turn any Python script into an MCP tool
 
@@ -116,7 +118,6 @@ print(json.dumps(result))
 **skill.toml:**
 ```toml
 name = "weather"
-version = "1.0.0"
 description = "Get weather forecast for a city"
 
 [runtime]
@@ -128,13 +129,12 @@ type = "string"
 flag = "--city"
 required = true
 description = "City name"
-max_length = 100
 ```
 
 **Deploy:**
 ```bash
 cp weather.py /opt/skills/weather/
-suckless-mcp --config config.toml serve
+suckless-mcp serve
 ```
 
 ## Generate skill.toml for any CLI tool
@@ -158,7 +158,6 @@ suckless-mcp **does not** make unsafe tools safe. It only reads `skill.toml` to 
 
 If your CLI tool deletes files, the AI can still delete files. The gateway adds:
 - Authentication (API keys)
-- Rate limiting
 - Timeouts
 - Concurrent execution limits
 
@@ -177,31 +176,36 @@ Then AI agents connect to `https://mcp.yourdomain.com/mcp`
 ## Commands
 
 ```bash
-suckless-mcp serve                    # Start gateway
-suckless-mcp skills list              # List all skills
-suckless-mcp skills validate          # Check skill.toml files
-suckless-mcp keys add <id> <key>      # Add API key
-suckless-mcp status                   # Show server state
+suckless-mcp serve                    # Start gateway (default)
+suckless-mcp status                   # Show loaded state as JSON
+suckless-mcp skills list              # List all registered skills
+suckless-mcp skills validate          # Validate all skills
+suckless-mcp skills validate <name>   # Validate one skill by name
+suckless-mcp keys list                # List key IDs (never raw values)
+suckless-mcp keys add <id> <key>      # Add an API key
+suckless-mcp keys revoke <id>         # Mark a key inactive
 ```
+
+All commands output JSON. Exit 0 = success, 1 = error.
 
 ## Configuration
 
-**config.toml**
+**config.toml** (`/etc/suckless-mcp/config.toml` by default)
 ```toml
 listen_host = "127.0.0.1"
 listen_port = 8080
-skills_root = "/opt/skills"
 max_concurrent_tools = 5
-rate_limit_per_minute = 60
 ```
 
-**keys.toml** (auto-generated via CLI)
+**keys.toml** (managed via CLI, never edit by hand)
 ```toml
 [[keys]]
 id = "admin"
 key = "your-secret-key"
 active = true
 ```
+
+**Skills root** is hardcoded to `/opt/skills`. Each skill is a subdirectory containing `skill.toml` and your executable script.
 
 ## Philosophy
 
@@ -212,9 +216,10 @@ suckless-mcp does one thing: **expose CLI tools as MCP endpoints**.
 - No plugin system
 - No database
 - No hot reload
-- No complexity
+- No rate limiting (delegate to Caddy)
+- No transport negotiation (POST /mcp only)
 
-Just a binary, config, and a folder of skills.
+Just a binary, one config file, one key file, and `/opt/skills/`.
 
 ## License
 
@@ -222,6 +227,7 @@ MIT
 
 ---
 
-For full deploy and hosting of your AI-ready infrastructure, please [contact](mailto:kibervarnost@proton.me)
+For deployment support, contact: kibervarnost@proton.me
 
 **suckless-mcp** — only your tools matter
+```
