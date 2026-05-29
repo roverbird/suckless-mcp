@@ -16,14 +16,13 @@
 //    POST /mcp        — MCP JSON-RPC 2.0 (Streamable HTTP, 2025-11-25 spec)
 //    GET  /health     — liveness probe, no auth
 //
-//  CLI SUBCOMMANDS (agentic-ready, all output JSON to stdout):
-//    serve            — start the gateway (default)
-//    status           — report loaded state as JSON
-//    skills list      — list all discovered skills as JSON
-//    skills validate [name]  — validate all or one skill
-//    keys list        — list key ids (never raw values)
-//    keys add         — append a key to keys.toml
-//    keys revoke      — mark a key inactive
+//  CLI FLAGS (agentic-ready, all output JSON to stdout):
+//    --serve                  start the gateway (default)
+//    --status                 report loaded state as JSON
+//    --skills [--name N]      list skills (all or one); exits 1 on load errors
+//    --keys-list              list key ids (never raw values)
+//    --keys-add --id I --key K  append a key to keys.toml
+//    --keys-revoke --id I     mark a key inactive
 //
 //  FILES:
 //    /etc/suckless-mcp/config.toml   — server settings
@@ -284,7 +283,7 @@ fn load_skill(toml_path: &Path, host_env: &HashMap<String, String>) -> Result<Sk
         let hint = if e.to_string().contains("newline") || e.to_string().contains("inline") {
             " (hint: multi-line inline tables are invalid TOML — use [inputs.field] table syntax instead)"
         } else {
-            " (hint: run 'skills validate' or check https://toml.io for syntax reference)"
+            " (hint: run '--skills' or check https://toml.io for syntax reference)"
         };
         format!("parse error in skill.toml: {e}{hint}")
     })?;
@@ -685,97 +684,68 @@ fn cli_err(summary: &str, hint: &str, data: Value) -> ! {
     std::process::exit(1);
 }
 
-// ── skills list ───────────────────────────────────────────────────────────────
+// ── skills ────────────────────────────────────────────────────────────────────
+//
+// Lists all discovered skills plus any load errors.
+// Exits 1 if any skill failed to load — safe to use in deploy scripts:
+//   suckless-mcp --skills && systemctl restart suckless-mcp
+//
+// With --name: narrows to one skill (exits 1 if not found).
 
-fn cmd_skills_list(discovered: &DiscoveryResult) {
-    let list: Vec<Value> = discovered.skills.iter().map(|s| json!({
+fn cmd_skills(discovered: &DiscoveryResult, name: Option<&str>) {
+    if let Some(name) = name {
+        match discovered.skills.iter().find(|s| s.toml.name == name) {
+            None    => cli_err(
+                &format!("Skill '{name}' not found."),
+                "Run '--skills' to see all available skills.",
+                json!({ "name": name }),
+            ),
+            Some(s) => cli_out("ok",
+                &format!("Skill '{}' loaded.", s.toml.name),
+                "Restart the gateway to apply any recent changes.",
+                json!({
+                    "name":         s.toml.name,
+                    "description":  s.toml.description,
+                    "script":       s.script.display().to_string(),
+                    "inputs":       s.toml.inputs.keys().collect::<Vec<_>>(),
+                    "timeout_secs": s.toml.runtime.timeout_secs,
+                }),
+            ),
+        }
+        return;
+    }
+
+    let skills: Vec<Value> = discovered.skills.iter().map(|s| json!({
         "name":         s.toml.name,
         "description":  s.toml.description,
         "script":       s.script.display().to_string(),
         "inputs":       s.toml.inputs.keys().collect::<Vec<_>>(),
         "timeout_secs": s.toml.runtime.timeout_secs,
+        "status":       "ok",
     })).collect();
 
-    let load_errors: Vec<Value> = discovered.errors.iter()
-        .map(|(folder, e)| json!({ "folder": folder, "error": e }))
+    let errors: Vec<Value> = discovered.errors.iter()
+        .map(|(folder, e)| json!({ "name": folder, "status": "error", "error": e }))
         .collect();
 
-    let n        = list.len();
-    let n_errors = load_errors.len();
+    let n        = skills.len();
+    let n_errors = errors.len();
     let status   = if n_errors > 0 && n == 0 { "error" } else if n_errors > 0 { "warn" } else { "ok" };
-    let summary  = format!("{n} skill(s) loaded. {n_errors} rejected (skill.toml errors).");
-    let hint     = if n_errors > 0 {
-        "Fix the rejected skills. Run 'skills validate' after correcting skill.toml."
-    } else {
-        "These are the tools exposed via POST /mcp."
-    };
+    let summary  = format!("{n} skill(s) ok, {n_errors} failed to load.");
+    let hint     = if n_errors > 0 { "Fix load errors before restarting." }
+                   else            { "These are the tools exposed via POST /mcp." };
 
-    cli_out(status, &summary, hint, json!({
-        "skills":      list,
-        "load_errors": load_errors,
-    }));
-}
+    let mut all = skills;
+    all.extend(errors);
 
-// ── skills validate [name] ────────────────────────────────────────────────────
-//
-// Without a name: validates all skills and reports load errors.
-// With a name:    validates one skill by name.
-
-fn cmd_skills_validate(discovered: &DiscoveryResult, filter: Option<&str>) {
-    // If a name was given, narrow to that one skill (or report not found)
-    if let Some(name) = filter {
-        match discovered.skills.iter().find(|s| s.toml.name == name) {
-            None => cli_err(
-                &format!("Skill '{name}' not found."),
-                "Run 'skills list' to see available skills.",
-                json!({ "name": name }),
-            ),
-            Some(s) => {
-                cli_out("ok",
-                    &format!("Skill '{}' loaded successfully.", s.toml.name),
-                    "Restart the gateway to apply any recent changes.",
-                    json!({ "skill": s.toml.name }),
-                );
-                return;
-            }
-        }
-    }
-
-    let mut results = Vec::new();
-    let mut n_ok    = 0usize;
-    let mut n_error = 0usize;
-
-    for (folder, e) in &discovered.errors {
-        n_error += 1;
-        results.push(json!({
-            "skill":  folder,
-            "status": "error",
-            "error":  e,
-        }));
-    }
-
-    for skill in &discovered.skills {
-        n_ok += 1;
-        results.push(json!({ "skill": skill.toml.name, "status": "ok" }));
-    }
-
-    let total   = n_ok + n_error;
-    let status  = if n_error > 0 { "error" } else { "ok" };
-    let summary = format!("{total} skill(s) checked. {n_ok} ok, {n_error} failed to load.");
-    let hint    = if n_error > 0 {
-        "Fix all load errors before restarting."
-    } else {
-        "All skills loaded. Safe to restart the gateway."
-    };
-
-    if n_error > 0 {
+    if n_errors > 0 {
         eprintln!("{}", serde_json::to_string_pretty(&json!({
             "status": status, "summary": summary, "hint": hint,
-            "data": { "results": results },
+            "data": { "skills": all },
         })).unwrap());
         std::process::exit(1);
     } else {
-        cli_out(status, &summary, hint, json!({ "results": results }));
+        cli_out(status, &summary, hint, json!({ "skills": all }));
     }
 }
 
@@ -790,9 +760,9 @@ fn cmd_status(config: &Config, discovered: &DiscoveryResult, keys: &KeysFile) {
     let status  = if n_skills == 0 { "error" } else if n_errors > 0 { "warn" } else { "ok" };
     let summary = format!("{n_skills} skill(s) registered. {n_errors} rejected. {active_keys} active key(s).");
     let hint    = if n_skills == 0 {
-        "No skills registered. Check SKILLS_ROOT (/opt/skills) and run 'skills validate'."
+        "No skills registered. Check SKILLS_ROOT (/opt/skills) and run '--skills'."
     } else {
-        "Run 'skills list' to see registered tools. Run 'keys list' to see active clients."
+        "Run '--skills' to see registered tools. Run '--keys-list' to see active clients."
     };
 
     cli_out(status, &summary, hint, json!({
@@ -818,7 +788,7 @@ fn cmd_keys_list(keys: &KeysFile) {
     cli_out(
         "ok",
         &format!("{} key(s) total, {} active.", list.len(), active),
-        "Raw key values are never shown. To rotate: 'keys revoke <id>' then 'keys add <id> <key>'.",
+        "Raw key values are never shown. To rotate: '--keys-revoke --id ID' then '--keys-add --id ID --key K'.",
         json!({ "keys": list }),
     );
 }
@@ -834,7 +804,7 @@ fn cmd_keys_add(keys_path: &str, id: &str, key: &str) {
     if kf.keys.iter().any(|k| k.id == id) {
         cli_err(
             &format!("Key id '{id}' already exists."),
-            "Choose a different id, or revoke the existing one first with 'keys revoke <id>'.",
+            "Choose a different id, or revoke the existing one first with '--keys-revoke --id ID'.",
             json!({ "id": id }),
         );
     }
@@ -864,7 +834,7 @@ fn cmd_keys_revoke(keys_path: &str, id: &str) {
     match kf.keys.iter_mut().find(|k| k.id == id) {
         None => cli_err(
             &format!("Key '{id}' not found."),
-            "Run 'keys list' to see available key ids.",
+            "Run '--keys-list' to see available key ids.",
             json!({ "id": id }),
         ),
         Some(k) => {
@@ -888,51 +858,60 @@ fn print_help() {
     println!("suckless-mcp v{}", env!("CARGO_PKG_VERSION"));
     println!("Suckless MCP remote gateway — CLI tools as MCP endpoints.\n");
     println!("USAGE:");
-    println!("  suckless-mcp [--config <path>] <subcommand>\n");
-    println!("SUBCOMMANDS:");
-    println!("  serve                        Start the gateway (default)");
-    println!("  status                       Show loaded state as JSON");
-    println!("  skills list                  List registered skills as JSON");
-    println!("  skills validate [name]       Validate all (or one) skill");
-    println!("  keys list                    List key ids (never raw values)");
-    println!("  keys add <id> <key>          Append a key to keys.toml");
-    println!("  keys revoke <id>             Mark a key inactive in keys.toml");
+    println!("  suckless-mcp --<action> [--<param> <value> ...]\n");
+    println!("ACTIONS:");
+    println!("  --serve                        Start the gateway (default if no action given)");
+    println!("  --status                       Show loaded state as JSON");
+    println!("  --skills                       List all skills; exits 1 on load errors");
+    println!("  --skills --name NAME           Show one skill by name");
+    println!("  --keys-list                    List key ids (never raw values)");
+    println!("  --keys-add --id ID --key KEY   Append a key to keys.toml");
+    println!("  --keys-revoke --id ID          Mark a key inactive in keys.toml");
     println!("\nOPTIONS:");
-    println!("  --config <path>              Config file (default: /etc/suckless-mcp/config.toml)");
+    println!("  --config PATH   Config file (default: /etc/suckless-mcp/config.toml)");
+    println!("  --help          Show this message");
     println!("\nSkills root is hardcoded to: {SKILLS_ROOT}");
-    println!("All subcommands output JSON. Exit 0 = success, 1 = error.");
+    println!("All actions output JSON. Exit 0 = success, 1 = error.");
 }
 
-// ============================================================================
-// MAIN
-// ============================================================================
+/// Minimal flag parser. Returns the value of the first occurrence of `flag`,
+/// or None if absent. Handles both `--flag value` and `--flag=value` forms.
+fn flag<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let prefix = format!("{flag}=");
+    for (i, a) in args.iter().enumerate() {
+        if a == flag {
+            return args.get(i + 1).map(|s| s.as_str());
+        }
+        if let Some(val) = a.strip_prefix(&prefix) {
+            return Some(val);
+        }
+    }
+    None
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    if has_flag(&args, "--help") || has_flag(&args, "-h") || args.is_empty() {
         print_help();
         return;
     }
 
-    // ── Resolve --config path ─────────────────────────────────────────────────
-    let config_path = args.windows(2)
-        .find(|w| w[0] == "--config")
-        .map(|w| w[1].clone())
-        .or_else(|| args.iter().find(|a| !a.starts_with("--") && a.ends_with(".toml")).cloned())
-        .unwrap_or_else(|| "/etc/suckless-mcp/config.toml".to_string());
-
+    // ── Global options ────────────────────────────────────────────────────────
+    let config_path = flag(&args, "--config")
+        .unwrap_or("/etc/suckless-mcp/config.toml");
     let keys_path = config_path.replace("config.toml", "keys.toml");
 
-    // ── Parse subcommand ──────────────────────────────────────────────────────
-    let subcmd: Vec<&str> = args.iter()
-        .filter(|a| !a.starts_with("--") && !a.ends_with(".toml"))
-        .map(|a| a.as_str())
-        .collect();
+    // ── Actions that need no config ───────────────────────────────────────────
+    // (none currently — all actions need at least keys.toml)
 
-    // Load config — required for everything
-    let config = match load_config(&config_path) {
+    // ── Load config and keys — required for all actions ───────────────────────
+    let config = match load_config(config_path) {
         Ok(c)  => c,
         Err(e) => cli_err(
             "Cannot load config.toml.",
@@ -945,43 +924,72 @@ async fn main() {
         Ok(k)  => k,
         Err(e) => cli_err(
             "Cannot load keys.toml.",
-            &format!("Check that {keys_path} exists. Create it with 'keys add'. Error: {e}"),
+            &format!("Check that {keys_path} exists. Create it with '--keys-add'. Error: {e}"),
             json!({ "path": keys_path, "reason": e }),
         ),
     };
 
-    // ── keys subcommands — no skill discovery needed ──────────────────────────
-    match subcmd.as_slice() {
-        ["keys", "list"]         => { cmd_keys_list(&keys); return; }
-        ["keys", "add", id, key] => { cmd_keys_add(&keys_path, id, key); return; }
-        ["keys", "revoke", id]   => { cmd_keys_revoke(&keys_path, id); return; }
-        ["keys", ..] => cli_err(
-            "Unknown keys subcommand.",
-            "Valid: keys list | keys add <id> <key> | keys revoke <id>",
-            json!({ "args": subcmd }),
-        ),
-        _ => {}
+    // ── Keys actions — no skill discovery needed ──────────────────────────────
+    if has_flag(&args, "--keys-list") {
+        cmd_keys_list(&keys);
+        return;
+    }
+    if has_flag(&args, "--keys-add") {
+        let id  = flag(&args, "--id") .unwrap_or_else(|| cli_err(
+            "--keys-add requires --id",
+            "Usage: suckless-mcp --keys-add --id ID --key KEY",
+            json!({}),
+        ));
+        let key = flag(&args, "--key").unwrap_or_else(|| cli_err(
+            "--keys-add requires --key",
+            "Usage: suckless-mcp --keys-add --id ID --key KEY",
+            json!({}),
+        ));
+        cmd_keys_add(&keys_path, id, key);
+        return;
+    }
+    if has_flag(&args, "--keys-revoke") {
+        let id = flag(&args, "--id").unwrap_or_else(|| cli_err(
+            "--keys-revoke requires --id",
+            "Usage: suckless-mcp --keys-revoke --id ID",
+            json!({}),
+        ));
+        cmd_keys_revoke(&keys_path, id);
+        return;
     }
 
     // ── Discover skills ───────────────────────────────────────────────────────
     let host_env: HashMap<String, String> = std::env::vars().collect();
     let discovered = discover_skills(&host_env);
 
-    // ── Remaining CLI subcommands ─────────────────────────────────────────────
-    match subcmd.as_slice() {
-        ["status"]                        => { cmd_status(&config, &discovered, &keys); return; }
-        ["skills", "list"]                => { cmd_skills_list(&discovered); return; }
-        ["skills", "validate"]            => { cmd_skills_validate(&discovered, None); return; }
-        ["skills", "validate", name]      => { cmd_skills_validate(&discovered, Some(name)); return; }
-        ["skills", ..] => cli_err(
-            "Unknown skills subcommand.",
-            "Valid: skills list | skills validate [name]",
-            json!({ "args": subcmd }),
-        ),
-        _ => {}
+    // ── Skills and status actions ─────────────────────────────────────────────
+    if has_flag(&args, "--status") {
+        cmd_status(&config, &discovered, &keys);
+        return;
+    }
+    if has_flag(&args, "--skills") {
+        cmd_skills(&discovered, flag(&args, "--name"));
+        return;
     }
 
-    // ── serve (default) ───────────────────────────────────────────────────────
+    // ── Unknown flag check ────────────────────────────────────────────────────
+    // Any unrecognised --flag is an error rather than silently falling through to serve.
+    let known = &[
+        "--serve", "--status", "--skills",
+        "--keys-list", "--keys-add", "--keys-revoke",
+        "--config", "--id", "--key", "--name", "--help", "-h",
+    ];
+    for a in &args {
+        if a.starts_with("--") && !known.iter().any(|k| a == k || a.starts_with(&format!("{k}="))) {
+            cli_err(
+                &format!("Unknown flag: {a}"),
+                "Run 'suckless-mcp --help' to see all flags.",
+                json!({ "flag": a }),
+            );
+        }
+    }
+
+    // ── --serve (default action) ──────────────────────────────────────────────
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_env("LOG_LEVEL")
@@ -998,7 +1006,7 @@ async fn main() {
 
     let active_keys: Vec<ApiKey> = keys.keys.into_iter().filter(|k| k.active).collect();
     if active_keys.is_empty() {
-        eprintln!("FATAL: no active keys in keys.toml. Add one with 'keys add <id> <key>'.");
+        eprintln!("FATAL: no active keys in keys.toml. Add one with '--keys-add --id ID --key KEY'.");
         std::process::exit(1);
     }
 

@@ -1,9 +1,8 @@
-```markdown
 # suckless-mcp
 
 **The suckless MCP gateway. Turn any CLI tool into an MCP endpoint.**
 
-One binary. Two configs. One dir of skills. No bloat.
+One binary. One config file. One key file. One dir of skills. Same `--flags` everywhere.
 
 ```bash
 # Copy binary
@@ -38,10 +37,10 @@ EOF
 cp weather.py /opt/skills/weather/
 
 # Add an API key
-suckless-mcp keys add admin "your-secret-key"
+suckless-mcp --keys-add --id admin --key "your-secret-key"
 
 # Run
-suckless-mcp serve
+suckless-mcp --serve
 ```
 
 ## What is this?
@@ -62,10 +61,10 @@ AI Agent → Caddy → suckless-mcp → your CLI tool (--flags)
 
 | Problem | Solution |
 |---------|----------|
-| MCP SDK requires rewriting tools | Keep your tools as-is |
+| MCP SDK require dependencies | Single binary |
 | Need authentication | Built into gateway |
 | Each tool needs its own server | One gateway, many tools |
-| Setup complexity | One binary, two configs |
+| Setup complexity | One binary, a config and a key file|
 
 ## What you need
 
@@ -90,7 +89,25 @@ AI Agent → Caddy → suckless-mcp → your CLI tool (--flags)
 2. **Output valid JSON** - nothing else to stdout
 3. **Exit 0 on success, 1 on error**
 
-That's it. Everything else (auth, concurrency, timeouts) is handled by suckless-mcp.
+Everything else (auth, concurrency, timeouts) is handled by suckless-mcp.
+
+## The gateway follows the same rules
+
+suckless-mcp itself uses `--flags` — no positional subcommands, no hidden state.
+
+```bash
+# All gateway commands are flags
+suckless-mcp --help
+suckless-mcp --status
+suckless-mcp --skills
+suckless-mcp --skills --name weather
+suckless-mcp --keys-list
+suckless-mcp --keys-add --id admin --key secret
+suckless-mcp --keys-revoke --id admin
+suckless-mcp --serve
+```
+
+Same pattern as your skills. LLMs learn once, apply everywhere.
 
 ## Example: Turn any Python script into an MCP tool
 
@@ -134,7 +151,7 @@ description = "City name"
 **Deploy:**
 ```bash
 cp weather.py /opt/skills/weather/
-suckless-mcp serve
+suckless-mcp --serve
 ```
 
 ## Generate skill.toml for any CLI tool
@@ -175,18 +192,18 @@ Then AI agents connect to `https://mcp.yourdomain.com/mcp`
 
 ## Commands
 
-```bash
-suckless-mcp serve                    # Start gateway (default)
-suckless-mcp status                   # Show loaded state as JSON
-suckless-mcp skills list              # List all registered skills
-suckless-mcp skills validate          # Validate all skills
-suckless-mcp skills validate <name>   # Validate one skill by name
-suckless-mcp keys list                # List key IDs (never raw values)
-suckless-mcp keys add <id> <key>      # Add an API key
-suckless-mcp keys revoke <id>         # Mark a key inactive
-```
+All commands use `--flags`. Output is always JSON. Exit 0 = success, 1 = error.
 
-All commands output JSON. Exit 0 = success, 1 = error.
+| Action | Command |
+|--------|---------|
+| Start gateway | `suckless-mcp --serve` |
+| Show server state | `suckless-mcp --status` |
+| List all skills | `suckless-mcp --skills` |
+| Show one skill | `suckless-mcp --skills --name weather` |
+| List key IDs | `suckless-mcp --keys-list` |
+| Add a key | `suckless-mcp --keys-add --id admin --key secret` |
+| Revoke a key | `suckless-mcp --keys-revoke --id admin` |
+| Show help | `suckless-mcp --help` |
 
 ## Configuration
 
@@ -218,6 +235,7 @@ suckless-mcp does one thing: **expose CLI tools as MCP endpoints**.
 - No hot reload
 - No rate limiting (delegate to Caddy)
 - No transport negotiation (POST /mcp only)
+- No positional subcommands (gateway uses `--flags` just like skills)
 
 Just a binary, one config file, one key file, and `/opt/skills/`.
 
@@ -230,4 +248,3 @@ MIT
 For deployment support, contact: kibervarnost@proton.me
 
 **suckless-mcp** — only your tools matter
-```
