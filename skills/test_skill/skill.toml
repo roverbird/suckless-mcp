@@ -1,34 +1,27 @@
 name = "test_skill"
-version = "1.0.0"
 description = "Agent-safe text processor. No filesystem access. Demonstrates bounded, scoped, predictable CLI patterns."
 
 [runtime]
 entrypoint = "test_skill.py"
 timeout_secs = 30
-max_output_bytes = 65536
-
-[inputs]
 
 [inputs.action]
 type = "string"
 flag = "--action"
 required = true
-description = "Text operation to perform"
-enum = ["echo", "count", "transform", "extract", "compare"]
+description = "Text operation to perform (echo, count, transform, extract, compare)"
 
 [inputs.input]
 type = "string"
 flag = "--input"
 required = true
 description = "Input text to process"
-max_length = 5000
 
 [inputs.second]
 type = "string"
 flag = "--second"
 required = false
 description = "Second input for compare action"
-max_length = 5000
 
 [inputs.limit]
 type = "integer"
@@ -41,8 +34,7 @@ default = 100
 type = "string"
 flag = "--transform"
 required = false
-description = "Transformation to apply"
-enum = ["upper", "lower", "reverse", "trim", "slugify"]
+description = "Transformation to apply (upper, lower, reverse, trim, slugify)"
 default = "upper"
 
 [inputs.scope]
@@ -51,19 +43,15 @@ flag = "--scope"
 required = false
 description = "Operation scope (cache/namespace isolation)"
 default = "default"
-pattern = "^[a-z0-9_\\-]+$"
-max_length = 50
 
 [inputs.dry_run]
 type = "boolean"
 flag = "--dry-run"
 required = false
-description = "Preview what would happen (no actual processing)"
-default = false
+description = "Preview what would happen"
 
 [inputs.verbose]
 type = "boolean"
 flag = "--verbose"
 required = false
-description = "Include debug info in output"
-default = false
+description = "Include debug info"
