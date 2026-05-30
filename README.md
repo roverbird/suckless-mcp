@@ -1,6 +1,3 @@
-Here's the updated README with the installation script as the primary method:
-
-```markdown
 # suckless-mcp
 
 **The suckless MCP gateway. Turn any CLI tool into an MCP endpoint.**
