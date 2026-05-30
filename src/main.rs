@@ -39,7 +39,7 @@ use std::{
 };
 
 use axum::{
-    extract::State,
+    extract::{Extension, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
@@ -131,6 +131,8 @@ struct SkillToml {
     inputs:      HashMap<String, InputSpec>,
     #[serde(default)]
     permissions: Permissions,
+    #[serde(default)]
+    public:      bool,   // true = no auth required to list or call this tool
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -405,30 +407,17 @@ struct AppState {
 // AUTH
 // ============================================================================
 
-fn authenticate<'a>(headers: &HeaderMap, keys: &'a [ApiKey]) -> Result<&'a ApiKey, axum::response::Response> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Unauthorized").into_response())?;
-
-    keys.iter()
-        .find(|k| k.key == token && k.active)
-        .ok_or_else(|| {
-            warn!("rejected invalid/inactive key");
-            (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
-        })
-}
-
-/// Tower middleware: runs before routing, so every request — regardless of method
-/// or path — is rejected with 401 if it lacks a valid Bearer token.
-/// The /health route is explicitly exempted.
+/// Tower middleware: runs before routing.
+/// Validates the Bearer token if present and stores the resolved key (or None)
+/// in request extensions. Hard-rejects only requests with a *malformed/invalid*
+/// token — missing auth is allowed here; handlers decide per-tool based on
+/// the `public` flag.
 async fn auth_middleware(
     State(state): State<AppState>,
-    req: Request<axum::body::Body>,
+    mut req: Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
-    // Health check is public — skip auth
+    // Health check is always public
     if req.uri().path() == "/health" {
         return next.run(req).await;
     }
@@ -439,17 +428,21 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
 
-    let valid = match token {
-        Some(t) => state.keys.iter().any(|k| k.key == t && k.active),
-        None    => false,
+    let authed_key: Option<ApiKey> = match token {
+        Some(t) => {
+            let found = state.keys.iter().find(|k| k.key == t && k.active).cloned();
+            if found.is_none() {
+                // Token present but invalid/inactive — hard reject
+                warn!("auth_middleware: rejected invalid/inactive token method={} path={}",
+                    req.method(), req.uri().path());
+                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+            }
+            found
+        }
+        None => None,  // No token — let dispatch decide based on tool's public flag
     };
 
-    if !valid {
-        warn!("auth_middleware: rejected unauthenticated request method={} path={}",
-            req.method(), req.uri().path());
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-    }
-
+    req.extensions_mut().insert(authed_key);
     next.run(req).await
 }
 
@@ -465,14 +458,11 @@ fn session_id(headers: &HeaderMap) -> Option<String> {
 // ============================================================================
 
 async fn mcp_handler(
-    headers:      HeaderMap,
-    State(state): State<AppState>,
-    Json(req):    Json<RpcRequest>,
+    headers:                          HeaderMap,
+    State(state):                     State<AppState>,
+    Extension(authed_key):            Extension<Option<ApiKey>>,
+    Json(req):                        Json<RpcRequest>,
 ) -> axum::response::Response {
-    let key = match authenticate(&headers, &state.keys) {
-        Ok(k)  => k,
-        Err(r) => return r,
-    };
 
     if req.jsonrpc != "2.0" {
         return rpc_err(Value::Null, -32600, "jsonrpc must be \"2.0\"");
@@ -481,7 +471,7 @@ async fn mcp_handler(
     let id  = req.id.clone().unwrap_or(Value::Null);
     let sid = session_id(&headers);
 
-    let response = dispatch(req, id, key, &state).await;
+    let response = dispatch(req, id, authed_key.as_ref(), &state).await;
 
     // Echo Mcp-Session-Id if present — stateless reflection for aggregator compat
     if let Some(s) = sid {
@@ -497,16 +487,18 @@ async fn mcp_handler(
 }
 
 async fn dispatch(
-    req:   RpcRequest,
-    id:    Value,
-    key:   &ApiKey,
-    state: &AppState,
+    req:        RpcRequest,
+    id:         Value,
+    authed_key: Option<&ApiKey>,
+    state:      &AppState,
 ) -> axum::response::Response {
+    let client_id = authed_key.map(|k| k.id.as_str()).unwrap_or("anonymous");
+
     match req.method.as_str() {
 
         // ── initialize ────────────────────────────────────────────────────────
         "initialize" => {
-            info!("initialize client={}", key.id);
+            info!("initialize client={}", client_id);
             rpc_ok(id, json!({
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
@@ -527,6 +519,7 @@ async fn dispatch(
         // ── tools/list ────────────────────────────────────────────────────────
         "tools/list" => {
             let tools: Vec<Value> = state.skills.iter()
+                .filter(|s| authed_key.is_some() || s.toml.public)
                 .map(|s| json!({
                     "name":        s.toml.name,
                     "description": s.toml.description,
@@ -534,7 +527,7 @@ async fn dispatch(
                 }))
                 .collect();
 
-            info!("tools/list client={} count={}", key.id, tools.len());
+            info!("tools/list client={} count={}", client_id, tools.len());
             rpc_ok(id, json!({ "tools": tools }))
         }
 
@@ -549,6 +542,12 @@ async fn dispatch(
                 Some(s) => s.clone(),
                 None    => return rpc_err(id, -32601, format!("unknown tool: {tool_name}")),
             };
+
+            // Private tools require a valid key
+            if !skill.toml.public && authed_key.is_none() {
+                warn!("tools/call: unauthenticated call to private tool={tool_name}");
+                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+            }
 
             let args = &req.params["arguments"];
 
@@ -675,7 +674,7 @@ async fn dispatch(
                 return rpc_err(id, -32603, "script output is not valid JSON");
             }
 
-            info!("ok skill={tool_name} client={} duration_ms={duration_ms}", key.id);
+            info!("ok skill={tool_name} client={} duration_ms={duration_ms}", client_id);
 
             rpc_ok(id, json!({
                 "content": [{ "type": "text", "text": stdout }]
@@ -683,7 +682,7 @@ async fn dispatch(
         }
 
         other => {
-            warn!("unknown_method={other} client={}", key.id);
+            warn!("unknown_method={other} client={}", client_id);
             rpc_err(id, -32601, format!("method not found: {other}"))
         }
     }

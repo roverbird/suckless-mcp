@@ -13,7 +13,7 @@ SKILLS_DIR="/opt/skills"
 SERVICE_NAME="suckless-mcp"
 
 # Direct download URL for pre-compiled binary (release 0.1)
-BINARY_URL="https://github.com/roverbird/suckless-mcp/releases/download/0.1/suckless-mcp-x86_64-unknown-linux-gnu"
+BINARY_URL="https://github.com/roverbird/suckless-mcp/releases/download/0.3/suckless-mcp-x86_64-unknown-linux-gnu"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

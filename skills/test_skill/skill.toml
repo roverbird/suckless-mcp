@@ -1,5 +1,7 @@
 name = "test_skill"
 description = "Agent-safe text processor. No filesystem access. Demonstrates bounded, scoped, predictable CLI patterns."
+public = true   # No API key required # set 'false' to require api key auth
+
 
 [runtime]
 entrypoint = "test_skill.py"
