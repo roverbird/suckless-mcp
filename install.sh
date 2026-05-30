@@ -132,17 +132,20 @@ EOF
         info "Created system user: suckless"
     fi
 
+    # Generate API key and create keys.toml directly (bypassing --keys-add bug)
+    API_KEY=$(openssl rand -hex 32 2>/dev/null || echo "change-this-key-please")
+    
+    # Create keys.toml directly with sudo
+    sudo tee "${CONFIG_DIR}/keys.toml" > /dev/null << EOF
+[[keys]]
+id = "admin"
+key = "$API_KEY"
+active = true
+EOF
+    info "Created keys.toml with API key: $API_KEY"
+    
+    # Set ownership after creating files
     sudo chown -R suckless:suckless "$CONFIG_DIR" "$SKILLS_DIR" /var/log/suckless-mcp
-
-    # Add API key if none exists
-    if [[ ! -f "${CONFIG_DIR}/keys.toml" ]] || [[ ! -s "${CONFIG_DIR}/keys.toml" ]]; then
-        API_KEY=$(openssl rand -hex 32 2>/dev/null || echo "change-this-key-please")
-        sudo "${INSTALL_DIR}/${BINARY_NAME}" --keys-add --id admin --key "$API_KEY" 2>/dev/null || \
-            warn "Could not add API key automatically"
-        info "API Key: $API_KEY (save this)"
-    else
-        info "Existing keys.toml found, skipping API key creation"
-    fi
 
     # Create systemd service
     sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null << EOF
@@ -190,12 +193,12 @@ EOF
     echo
     echo "Config:  $CONFIG_DIR/config.toml"
     echo "Keys:    $CONFIG_DIR/keys.toml"
+    echo "API Key: $API_KEY"
     echo "Skills:  $SKILLS_DIR"
     echo
     echo "Next steps:"
-    echo "1. Get API key: sudo grep -A1 'admin' $CONFIG_DIR/keys.toml"
-    echo "2. Test: curl http://127.0.0.1:8080/health"
-    echo "3. Set up Caddy reverse proxy"
+    echo "1. Test: curl -H 'Authorization: Bearer $API_KEY' http://127.0.0.1:8080/mcp -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' -H 'Content-Type: application/json'"
+    echo "2. Set up Caddy reverse proxy"
 }
 
 if [[ "${1:-}" == "--uninstall" ]]; then
