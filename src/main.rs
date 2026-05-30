@@ -40,7 +40,8 @@ use std::{
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -417,6 +418,39 @@ fn authenticate<'a>(headers: &HeaderMap, keys: &'a [ApiKey]) -> Result<&'a ApiKe
             warn!("rejected invalid/inactive key");
             (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
         })
+}
+
+/// Tower middleware: runs before routing, so every request — regardless of method
+/// or path — is rejected with 401 if it lacks a valid Bearer token.
+/// The /health route is explicitly exempted.
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    // Health check is public — skip auth
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    let token = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let valid = match token {
+        Some(t) => state.keys.iter().any(|k| k.key == t && k.active),
+        None    => false,
+    };
+
+    if !valid {
+        warn!("auth_middleware: rejected unauthenticated request method={} path={}",
+            req.method(), req.uri().path());
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    next.run(req).await
 }
 
 /// Extract optional MCP session ID for echo (stateless — we just reflect it).
@@ -1019,6 +1053,7 @@ async fn main() {
     let app = Router::new()
         .route("/mcp",    post(mcp_handler))
         .route("/health", get(health_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
 
     let addr = format!("{}:{}", config.listen_host, config.listen_port);
