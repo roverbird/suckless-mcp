@@ -1,7 +1,24 @@
 [package]
-name    = "suckless-mcp"
-version = "0.1.0"
+name = "suckless-mcp"
+version = "0.3.0"
 edition = "2021"
+description = "Turn any CLI tool into an MCP endpoint - minimal gateway with per-tool auth"
+license = "MIT"
+repository = "https://github.com/roverbird/suckless-mcp"
+homepage = "https://github.com/roverbird/suckless-mcp"
+documentation = "https://github.com/roverbird/suckless-mcp#readme"
+keywords = ["mcp", "model-context-protocol", "gateway", "cli", "llm"]
+categories = ["command-line-utilities", "web-programming"]
+authors = ["roverbird"]
+readme = "README.md"
+
+# Add this to exclude unnecessary files
+include = [
+    "src/**/*.rs",
+    "README.md",
+    "LICENSE",
+    "skills/**/*",
+]
 
 [[bin]]
 name = "suckless-mcp"
@@ -25,3 +42,4 @@ opt-level     = 3
 lto           = true
 codegen-units = 1
 strip         = true
+
