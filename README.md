@@ -7,7 +7,18 @@ Here's the updated README with the installation script as the primary method:
 
 One binary. One config file. One key file. One dir of skills. Same `--flags` everywhere.
 
-## Quick Install (Linux x86_64)
+
+[![Crates.io](https://img.shields.io/crates/v/suckless-mcp.svg)](https://crates.io/crates/suckless-mcp)
+[![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+## Install
+
+### Via cargo (for Rust developers)
+```bash
+cargo install suckless-mcp
+```
+
+### Quick Install (Linux x86_64)
 
 ```bash
 # Install with one command
@@ -27,7 +38,7 @@ The installer does everything:
 - Creates a `suckless` system user
 - Installs a systemd service (auto-start on boot)
 
-## Manual Installation
+### Manual Installation
 
 ```bash
 # Copy binary
